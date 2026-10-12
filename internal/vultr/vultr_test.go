@@ -231,3 +231,102 @@ func TestCanonicalTargetPreservesRootHostname(t *testing.T) {
 func intPtr(value int) *int {
 	return &value
 }
+
+// Vultr returns priority -1 for record types that have no priority field.
+func TestApplyChangesDeletesRecordsWithNegativePriority(t *testing.T) {
+	records := &fakeRecords{byZone: map[string][]govultr.DomainRecord{"example.com": {
+		{ID: "a-id", Type: "A", Name: "www", Data: "192.0.2.1", Priority: -1, TTL: 60},
+		{ID: "txt-id", Type: "TXT", Name: "www", Data: `"heritage=external-dns"`, Priority: -1, TTL: 60},
+	}}}
+	changes := &plan.Changes{Delete: []*endpoint.Endpoint{
+		endpoint.NewEndpointWithTTL("www.example.com", "A", 60, "192.0.2.1"),
+		endpoint.NewEndpointWithTTL("www.example.com", "TXT", 60, `"heritage=external-dns"`),
+	}}
+
+	if err := testProvider(records).ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(records.deleted, []string{"a-id", "txt-id"}) {
+		t.Fatalf("deleted IDs = %v", records.deleted)
+	}
+}
+
+func TestApplyChangesUpdatesRecordsWithNegativePriority(t *testing.T) {
+	records := &fakeRecords{byZone: map[string][]govultr.DomainRecord{"example.com": {
+		{ID: "a-id", Type: "A", Name: "www", Data: "192.0.2.1", Priority: -1, TTL: 3600},
+		{ID: "txt-id", Type: "TXT", Name: "www", Data: `"heritage=external-dns"`, Priority: -1, TTL: 3600},
+	}}}
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpointWithTTL("www.example.com", "A", 3600, "192.0.2.1"),
+			endpoint.NewEndpointWithTTL("www.example.com", "TXT", 3600, `"heritage=external-dns"`),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpointWithTTL("www.example.com", "A", 60, "192.0.2.2"),
+			endpoint.NewEndpointWithTTL("www.example.com", "TXT", 60, `"heritage=external-dns"`),
+		},
+	}
+
+	if err := testProvider(records).ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(records.deleted, []string{"a-id", "txt-id"}) {
+		t.Fatalf("deleted IDs = %v", records.deleted)
+	}
+	want := []govultr.DomainRecordCreateReq{
+		{Name: "www", Type: "A", Data: "192.0.2.2", TTL: 60},
+		{Name: "www", Type: "TXT", Data: `"heritage=external-dns"`, TTL: 60},
+	}
+	if len(records.created) != len(want) {
+		t.Fatalf("created %d records, want %d", len(records.created), len(want))
+	}
+	for i := range want {
+		if !reflect.DeepEqual(*records.created[i], want[i]) {
+			t.Errorf("created[%d] = %#v, want %#v", i, *records.created[i], want[i])
+		}
+	}
+}
+
+func TestApplyChangesMatchesMXPriorityExactly(t *testing.T) {
+	records := &fakeRecords{byZone: map[string][]govultr.DomainRecord{"example.com": {
+		{ID: "mx-10", Type: "MX", Name: "", Data: "mail.example.com", Priority: 10, TTL: 600},
+	}}}
+
+	err := testProvider(records).ApplyChanges(context.Background(), &plan.Changes{Delete: []*endpoint.Endpoint{
+		endpoint.NewEndpointWithTTL("example.com", "MX", 600, "20 mail.example.com"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "matching record not found") {
+		t.Fatalf("error = %v, want matching record not found", err)
+	}
+	if len(records.deleted) != 0 {
+		t.Fatalf("deleted IDs = %v, want none", records.deleted)
+	}
+
+	if err := testProvider(records).ApplyChanges(context.Background(), &plan.Changes{Delete: []*endpoint.Endpoint{
+		endpoint.NewEndpointWithTTL("example.com", "MX", 600, "10 mail.example.com"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(records.deleted, []string{"mx-10"}) {
+		t.Fatalf("deleted IDs = %v", records.deleted)
+	}
+}
+
+func TestRecordsIgnoresNegativePriority(t *testing.T) {
+	records := &fakeRecords{byZone: map[string][]govultr.DomainRecord{"example.com": {
+		{ID: "1", Type: "A", Name: "www", Data: "192.0.2.1", Priority: -1, TTL: 60},
+		{ID: "2", Type: "TXT", Name: "www", Data: "value", Priority: -1, TTL: 60},
+	}}}
+
+	got, err := testProvider(records).Records(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []*endpoint.Endpoint{
+		endpoint.NewEndpointWithTTL("www.example.com", "A", 60, "192.0.2.1"),
+		endpoint.NewEndpointWithTTL("www.example.com", "TXT", 60, "value"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Records() mismatch\ngot:  %#v\nwant: %#v", got, want)
+	}
+}

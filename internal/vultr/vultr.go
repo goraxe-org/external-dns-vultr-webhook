@@ -580,7 +580,7 @@ type recordKey struct {
 func indexRecords(records []govultr.DomainRecord) map[recordKey][]string {
 	index := make(map[recordKey][]string, len(records))
 	for _, record := range records {
-		key := recordKey{name: canonicalName(record.Name), recordType: strings.ToUpper(record.Type), data: canonicalVultrData(record.Type, record.Data), priority: record.Priority}
+		key := recordKey{name: canonicalName(record.Name), recordType: strings.ToUpper(record.Type), data: canonicalVultrData(record.Type, record.Data), priority: keyPriority(record.Type, record.Priority)}
 		index[key] = append(index[key], record.ID)
 	}
 	return index
@@ -591,7 +591,19 @@ func keyForRequest(record *govultr.DomainRecordCreateReq) recordKey {
 	if record.Priority != nil {
 		priority = *record.Priority
 	}
-	return recordKey{name: canonicalName(record.Name), recordType: strings.ToUpper(record.Type), data: canonicalVultrData(record.Type, record.Data), priority: priority}
+	return recordKey{name: canonicalName(record.Name), recordType: strings.ToUpper(record.Type), data: canonicalVultrData(record.Type, record.Data), priority: keyPriority(record.Type, priority)}
+}
+
+// keyPriority returns the priority used to match records. Only MX and SRV
+// records carry a priority; Vultr reports -1 for every other type, so those
+// types are matched without priority.
+func keyPriority(recordType string, priority int) int {
+	switch strings.ToUpper(recordType) {
+	case "MX", "SRV":
+		return priority
+	default:
+		return 0
+	}
 }
 
 func canonicalVultrData(recordType, data string) string {
